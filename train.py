@@ -86,6 +86,7 @@ TRAINING_CONFIG = {
 # SECTION 2: Dataset Loading (WikiText-103)
 # =============================================================================
 
+
 def load_wikitext103(tokenizer, max_length=1024, test_mode=False):
     """
     Load and tokenize WikiText-103 dataset.
@@ -105,9 +106,15 @@ def load_wikitext103(tokenizer, max_length=1024, test_mode=False):
 
     if test_mode:
         # Use only 1000 samples for testing
-        dataset["train"] = dataset["train"].select(range(min(1000, len(dataset["train"]))))
-        dataset["validation"] = dataset["validation"].select(range(min(100, len(dataset["validation"]))))
-        print(f"Test mode: Using {len(dataset['train'])} train, {len(dataset['validation'])} val samples")
+        dataset["train"] = dataset["train"].select(
+            range(min(1000, len(dataset["train"])))
+        )
+        dataset["validation"] = dataset["validation"].select(
+            range(min(100, len(dataset["validation"])))
+        )
+        print(
+            f"Test mode: Using {len(dataset['train'])} train, {len(dataset['validation'])} val samples"
+        )
 
     def tokenize_function(examples):
         """Tokenize and chunk text into max_length sequences."""
@@ -130,7 +137,9 @@ def load_wikitext103(tokenizer, max_length=1024, test_mode=False):
 
         # Split into chunks
         result = {
-            "input_ids": [all_ids[i:i + max_length] for i in range(0, total_length, max_length)]
+            "input_ids": [
+                all_ids[i : i + max_length] for i in range(0, total_length, max_length)
+            ]
         }
         return result
 
@@ -150,7 +159,9 @@ def load_wikitext103(tokenizer, max_length=1024, test_mode=False):
         desc="Flattening",
     )
 
-    print(f"Dataset ready: {len(tokenized['train'])} train, {len(tokenized['validation'])} val sequences")
+    print(
+        f"Dataset ready: {len(tokenized['train'])} train, {len(tokenized['validation'])} val sequences"
+    )
 
     return tokenized["train"], tokenized["validation"]
 
@@ -185,6 +196,7 @@ def collate_fn(batch):
 # SECTION 3: GPT-2 Model Implementation
 # =============================================================================
 
+
 class GPT2Attention(nn.Module):
     """Multi-head self-attention with Flash Attention (PyTorch 2.0+)."""
 
@@ -218,7 +230,9 @@ class GPT2Attention(nn.Module):
         # - Automatically uses Flash Attention kernel when available (CUDA, contiguous, etc.)
         # - Memory: O(seq_len) instead of O(seq_len^2)
         out = F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=None,
             dropout_p=self.dropout_p if self.training else 0.0,
             is_causal=True,
@@ -280,15 +294,21 @@ class GPT2Model(nn.Module):
 
         # Token and position embeddings
         self.wte = nn.Embedding(config["vocab_size"], config["hidden_size"])
-        self.wpe = nn.Embedding(config["max_position_embeddings"], config["hidden_size"])
+        self.wpe = nn.Embedding(
+            config["max_position_embeddings"], config["hidden_size"]
+        )
         self.drop = nn.Dropout(config["dropout"])
 
         # Transformer blocks
-        self.blocks = nn.ModuleList([GPT2Block(config) for _ in range(config["num_layers"])])
+        self.blocks = nn.ModuleList(
+            [GPT2Block(config) for _ in range(config["num_layers"])]
+        )
 
         # Final layer norm and output projection
         self.ln_f = nn.LayerNorm(config["hidden_size"])
-        self.lm_head = nn.Linear(config["hidden_size"], config["vocab_size"], bias=False)
+        self.lm_head = nn.Linear(
+            config["hidden_size"], config["vocab_size"], bias=False
+        )
 
         # Weight tying
         self.wte.weight = self.lm_head.weight
@@ -299,7 +319,9 @@ class GPT2Model(nn.Module):
         # Count parameters
         self.n_params = sum(p.numel() for p in self.parameters())
         ckpt_status = "enabled" if use_gradient_checkpointing else "disabled"
-        print(f"GPT-2 model initialized with {self.n_params / 1e6:.1f}M parameters (gradient checkpointing: {ckpt_status})")
+        print(
+            f"GPT-2 model initialized with {self.n_params / 1e6:.1f}M parameters (gradient checkpointing: {ckpt_status})"
+        )
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -314,7 +336,9 @@ class GPT2Model(nn.Module):
 
     def forward(self, input_ids, labels=None):
         B, T = input_ids.size()
-        assert T <= self.config["max_position_embeddings"], f"Sequence length {T} exceeds max {self.config['max_position_embeddings']}"
+        assert T <= self.config["max_position_embeddings"], (
+            f"Sequence length {T} exceeds max {self.config['max_position_embeddings']}"
+        )
 
         # Token + position embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=input_ids.device)
@@ -336,18 +360,26 @@ class GPT2Model(nn.Module):
         logits = self.lm_head(x)
 
         loss = None
+        accuracy = None
         if labels is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+            # Compute top-1 token prediction accuracy
+            with torch.no_grad():
+                preds = logits.argmax(dim=-1)
+                correct = (preds == labels).float()
+                accuracy = correct.mean() * 100
 
-        return {"loss": loss, "logits": logits}
+        return {"loss": loss, "logits": logits, "accuracy": accuracy}
 
 
 # =============================================================================
 # SECTION 3.5: Tensor Parallelism Components
 # =============================================================================
 
+
 class TPGroup:
     """Manages Tensor Parallel process groups."""
+
     _instance = None
 
     def __init__(self, tp_size=2):
@@ -380,8 +412,9 @@ class TPGroup:
         self.tp_size = tp_size
         dp_size = self.world_size // tp_size
 
-        assert self.world_size % tp_size == 0, \
+        assert self.world_size % tp_size == 0, (
             f"World size {self.world_size} must be divisible by TP size {tp_size}"
+        )
 
         # Create TP groups: GPUs within a node that split model layers
         # For TP=2, world=4: groups are [0,1] and [2,3]
@@ -407,8 +440,12 @@ class TPGroup:
             print(f"\nTP Groups initialized:")
             print(f"  World size: {self.world_size}")
             print(f"  TP size: {tp_size}, DP size: {dp_size}")
-            print(f"  TP groups: {[list(range(i*tp_size, (i+1)*tp_size)) for i in range(dp_size)]}")
-            print(f"  DP groups: {[list(range(i, self.world_size, tp_size)) for i in range(tp_size)]}")
+            print(
+                f"  TP groups: {[list(range(i * tp_size, (i + 1) * tp_size)) for i in range(dp_size)]}"
+            )
+            print(
+                f"  DP groups: {[list(range(i, self.world_size, tp_size)) for i in range(tp_size)]}"
+            )
 
     def cleanup(self):
         """Clean up TP process groups."""
@@ -437,11 +474,13 @@ def get_tp_group():
 # These ensure proper gradient flow through TP communication operations
 # -----------------------------------------------------------------------------
 
+
 class _CopyToTPRegion(torch.autograd.Function):
     """
     Pass input forward unchanged, all-reduce gradients backward.
     Used at the START of a TP region (before ColumnParallelLinear).
     """
+
     @staticmethod
     def forward(ctx, input_, tp_group):
         ctx.tp_group = tp_group
@@ -460,6 +499,7 @@ class _ReduceFromTPRegion(torch.autograd.Function):
     All-reduce input forward, pass gradients backward unchanged.
     Used at the END of a TP region (after RowParallelLinear matmul).
     """
+
     @staticmethod
     def forward(ctx, input_, tp_group):
         ctx.tp_group = tp_group
@@ -480,6 +520,7 @@ class _GatherFromTPRegion(torch.autograd.Function):
     All-gather input forward, split gradients backward.
     Used when we need full tensor from split tensor (e.g., gather output).
     """
+
     @staticmethod
     def forward(ctx, input_, tp_group, tp_size, tp_rank):
         ctx.tp_group = tp_group
@@ -500,7 +541,7 @@ class _GatherFromTPRegion(torch.autograd.Function):
 
         # Split along last dimension
         dim_size = grad_output.shape[-1] // tp_size
-        grad_input = grad_output[..., tp_rank * dim_size:(tp_rank + 1) * dim_size]
+        grad_input = grad_output[..., tp_rank * dim_size : (tp_rank + 1) * dim_size]
         return grad_input.contiguous(), None, None, None
 
 
@@ -509,6 +550,7 @@ class _ScatterToTPRegion(torch.autograd.Function):
     Split input forward, all-gather gradients backward.
     Used when we need to scatter full tensor to TP ranks.
     """
+
     @staticmethod
     def forward(ctx, input_, tp_group, tp_size, tp_rank):
         ctx.tp_group = tp_group
@@ -516,7 +558,7 @@ class _ScatterToTPRegion(torch.autograd.Function):
 
         # Split along last dimension and keep this rank's portion
         dim_size = input_.shape[-1] // tp_size
-        output = input_[..., tp_rank * dim_size:(tp_rank + 1) * dim_size]
+        output = input_[..., tp_rank * dim_size : (tp_rank + 1) * dim_size]
         return output.contiguous()
 
     @staticmethod
@@ -536,13 +578,16 @@ def copy_to_tp_region(input_, tp_group):
     """Copy input to TP region (identity forward, all-reduce backward)."""
     return _CopyToTPRegion.apply(input_, tp_group)
 
+
 def reduce_from_tp_region(input_, tp_group):
     """Reduce from TP region (all-reduce forward, identity backward)."""
     return _ReduceFromTPRegion.apply(input_, tp_group)
 
+
 def gather_from_tp_region(input_, tp_group, tp_size, tp_rank):
     """Gather from TP region (all-gather forward, split backward)."""
     return _GatherFromTPRegion.apply(input_, tp_group, tp_size, tp_rank)
+
 
 def scatter_to_tp_region(input_, tp_group, tp_size, tp_rank):
     """Scatter to TP region (split forward, all-gather backward)."""
@@ -583,7 +628,7 @@ class ColumnParallelLinear(nn.Module):
         if bias:
             self.bias = nn.Parameter(torch.empty(self.out_features_per_partition))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
         self._init_weights()
 
@@ -599,7 +644,9 @@ class ColumnParallelLinear(nn.Module):
 
         if self.gather_output:
             # All-gather outputs from all TP ranks (with proper autograd)
-            output = gather_from_tp_region(output, self.tp_group, self.tp_size, self.tp_rank)
+            output = gather_from_tp_region(
+                output, self.tp_group, self.tp_size, self.tp_rank
+            )
 
         return output
 
@@ -639,7 +686,7 @@ class RowParallelLinear(nn.Module):
             # Bias is not partitioned - only rank 0 adds it after reduce
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
         self._init_weights()
 
@@ -699,15 +746,12 @@ class TPAttention(nn.Module):
             self.hidden_size,
             3 * self.hidden_size,
             bias=True,
-            gather_output=False  # Keep split for attention computation
+            gather_output=False,  # Keep split for attention computation
         )
 
         # Output: RowParallel - each GPU has hidden/tp_size, reduce to hidden
         self.c_proj = RowParallelLinear(
-            self.hidden_size,
-            self.hidden_size,
-            bias=True,
-            input_is_parallel=True
+            self.hidden_size, self.hidden_size, bias=True, input_is_parallel=True
         )
 
         self.resid_dropout = nn.Dropout(config["dropout"])
@@ -730,14 +774,18 @@ class TPAttention(nn.Module):
 
         # Flash attention on local heads
         out = F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=None,
             dropout_p=self.dropout_p if self.training else 0.0,
             is_causal=True,
         )
 
         # Reshape back: [B, num_heads_per_part, T, head_dim] -> [B, T, hidden_per_part]
-        out = out.transpose(1, 2).contiguous().view(B, T, self.hidden_size_per_partition)
+        out = (
+            out.transpose(1, 2).contiguous().view(B, T, self.hidden_size_per_partition)
+        )
 
         # Output projection (row parallel) - reduces across TP ranks
         out = self.c_proj(out)
@@ -754,10 +802,11 @@ class TPMLP(nn.Module):
     - c_proj (down-projection): RowParallel - reduce back to hidden_size
     """
 
-    def __init__(self, config):
+    def __init__(self, config, use_fused_kernel=False):
         super().__init__()
         tp = get_tp_group()
         self.tp_size = tp.tp_size
+        self.use_fused_kernel = use_fused_kernel
 
         hidden_size = config["hidden_size"]
         intermediate_size = config["intermediate_size"]
@@ -765,26 +814,46 @@ class TPMLP(nn.Module):
         assert intermediate_size % self.tp_size == 0
 
         # Up-projection: ColumnParallel
+        # When using fused kernel, we split bias handling
         self.c_fc = ColumnParallelLinear(
             hidden_size,
             intermediate_size,
-            bias=True,
-            gather_output=False
+            bias=not use_fused_kernel,  # No bias if using fused kernel
+            gather_output=False,
         )
+
+        # Separate bias for fused kernel
+        if use_fused_kernel:
+            # Bias is partitioned same as c_fc output
+            self.c_fc_bias = nn.Parameter(
+                torch.zeros(intermediate_size // self.tp_size)
+            )
 
         # Down-projection: RowParallel
         self.c_proj = RowParallelLinear(
-            intermediate_size,
-            hidden_size,
-            bias=True,
-            input_is_parallel=True
+            intermediate_size, hidden_size, bias=True, input_is_parallel=True
         )
 
         self.dropout = nn.Dropout(config["dropout"])
 
+        # Load fused kernel if requested
+        if use_fused_kernel:
+            try:
+                from fused_kernels.fused_bias_gelu import fused_bias_gelu
+
+                self._fused_bias_gelu = fused_bias_gelu
+            except Exception as e:
+                print(f"Warning: Could not load fused kernel: {e}")
+                print("Falling back to standard implementation.")
+                self.use_fused_kernel = False
+
     def forward(self, x):
         x = self.c_fc(x)
-        x = F.gelu(x, approximate="tanh")
+        if self.use_fused_kernel:
+            # Use fused bias + GELU kernel
+            x = self._fused_bias_gelu(x, self.c_fc_bias)
+        else:
+            x = F.gelu(x, approximate="tanh")
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
@@ -793,12 +862,12 @@ class TPMLP(nn.Module):
 class TPBlock(nn.Module):
     """Tensor Parallel Transformer block."""
 
-    def __init__(self, config):
+    def __init__(self, config, use_fused_kernel=False):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config["hidden_size"])
         self.attn = TPAttention(config)
         self.ln_2 = nn.LayerNorm(config["hidden_size"])
-        self.mlp = TPMLP(config)
+        self.mlp = TPMLP(config, use_fused_kernel=use_fused_kernel)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -814,27 +883,37 @@ class TPModel(nn.Module):
     Embeddings are replicated (small relative to attention/MLP).
     """
 
-    def __init__(self, config, use_gradient_checkpointing=True):
+    def __init__(self, config, use_gradient_checkpointing=True, use_fused_kernel=False):
         super().__init__()
         self.config = config
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_fused_kernel = use_fused_kernel
 
         tp = get_tp_group()
         self.tp_rank = tp.tp_rank
 
         # Embeddings are replicated across TP ranks
         self.wte = nn.Embedding(config["vocab_size"], config["hidden_size"])
-        self.wpe = nn.Embedding(config["max_position_embeddings"], config["hidden_size"])
+        self.wpe = nn.Embedding(
+            config["max_position_embeddings"], config["hidden_size"]
+        )
         self.drop = nn.Dropout(config["dropout"])
 
         # TP transformer blocks
-        self.blocks = nn.ModuleList([TPBlock(config) for _ in range(config["num_layers"])])
+        self.blocks = nn.ModuleList(
+            [
+                TPBlock(config, use_fused_kernel=use_fused_kernel)
+                for _ in range(config["num_layers"])
+            ]
+        )
 
         # Final layer norm (replicated)
         self.ln_f = nn.LayerNorm(config["hidden_size"])
 
         # LM head (replicated for simplicity - could also be ColumnParallel)
-        self.lm_head = nn.Linear(config["hidden_size"], config["vocab_size"], bias=False)
+        self.lm_head = nn.Linear(
+            config["hidden_size"], config["vocab_size"], bias=False
+        )
 
         # Weight tying
         self.wte.weight = self.lm_head.weight
@@ -849,9 +928,12 @@ class TPModel(nn.Module):
         total_params_estimate = n_params * tp.tp_size * 0.6 + n_params * 0.4
 
         ckpt_status = "enabled" if use_gradient_checkpointing else "disabled"
-        print(f"TP-GPT-2 initialized: ~{total_params_estimate/1e6:.1f}M total params "
-              f"({n_params/1e6:.1f}M local), TP rank {tp.tp_rank}/{tp.tp_size} "
-              f"(gradient checkpointing: {ckpt_status})")
+        fused_status = "enabled" if use_fused_kernel else "disabled"
+        print(
+            f"TP-GPT-2 initialized: ~{total_params_estimate / 1e6:.1f}M total params "
+            f"({n_params / 1e6:.1f}M local), TP rank {tp.tp_rank}/{tp.tp_size} "
+            f"(gradient checkpointing: {ckpt_status}, fused kernel: {fused_status})"
+        )
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -887,15 +969,22 @@ class TPModel(nn.Module):
         logits = self.lm_head(x)
 
         loss = None
+        accuracy = None
         if labels is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+            # Compute top-1 token prediction accuracy
+            with torch.no_grad():
+                preds = logits.argmax(dim=-1)
+                correct = (preds == labels).float()
+                accuracy = correct.mean() * 100
 
-        return {"loss": loss, "logits": logits}
+        return {"loss": loss, "logits": logits, "accuracy": accuracy}
 
 
 # =============================================================================
 # SECTION 4: Training Infrastructure
 # =============================================================================
+
 
 def setup_distributed():
     """Initialize distributed training environment."""
@@ -922,6 +1011,7 @@ def cleanup_distributed():
 
 def get_lr_scheduler(optimizer, warmup_steps, total_steps):
     """Linear warmup then cosine decay."""
+
     def lr_lambda(step):
         if step < warmup_steps:
             return step / warmup_steps
@@ -1017,7 +1107,9 @@ class MetricsTracker:
         self.world_size = world_size
 
         # Calculate FLOPs per step (per GPU)
-        self.flops_per_step = calculate_model_flops(model_config, batch_size, seq_length)
+        self.flops_per_step = calculate_model_flops(
+            model_config, batch_size, seq_length
+        )
 
         # Theoretical peak for all GPUs
         self.theoretical_peak = A100_PEAK_FLOPS_FP16 * world_size
@@ -1026,19 +1118,22 @@ class MetricsTracker:
 
     def reset(self):
         self.loss_sum = 0.0
+        self.accuracy_sum = 0.0
         self.tokens_sum = 0
         self.samples_sum = 0
         self.step_times = []
         self.start_time = time.time()
 
-    def update(self, loss, num_tokens, num_samples, step_time):
+    def update(self, loss, accuracy, num_tokens, num_samples, step_time):
         self.loss_sum += loss
+        self.accuracy_sum += accuracy if accuracy is not None else 0.0
         self.tokens_sum += num_tokens
         self.samples_sum += num_samples
         self.step_times.append(step_time)
 
     def get_metrics(self, steps):
         avg_loss = self.loss_sum / steps if steps > 0 else 0
+        avg_accuracy = self.accuracy_sum / steps if steps > 0 else 0
         total_time = sum(self.step_times) if self.step_times else 1
 
         throughput_tokens = self.tokens_sum / total_time
@@ -1053,6 +1148,8 @@ class MetricsTracker:
 
         return {
             "loss": avg_loss,
+            "accuracy": avg_accuracy,
+            "perplexity": math.exp(avg_loss) if avg_loss < 100 else float("inf"),
             "throughput_tokens_per_sec": throughput_tokens,
             "throughput_samples_per_sec": throughput_samples,
             "avg_step_time_ms": avg_step_time * 1000,
@@ -1066,6 +1163,7 @@ class MetricsTracker:
             print(
                 f"Step {step}/{total_steps} | "
                 f"Loss: {metrics['loss']:.4f} | "
+                f"Acc: {metrics['accuracy']:.1f}% | "
                 f"Throughput: {metrics['throughput_tokens_per_sec']:.0f} tok/s | "
                 f"MFU: {metrics['mfu_percent']:.1f}% | "
                 f"Step time: {metrics['avg_step_time_ms']:.1f}ms | "
@@ -1089,21 +1187,32 @@ class MetricsLogger:
                 "hidden_size": model_config["hidden_size"],
                 "num_layers": model_config["num_layers"],
                 "num_heads": model_config["num_heads"],
-                "params_millions": sum([
-                    model_config["vocab_size"] * model_config["hidden_size"],  # wte
-                    model_config["max_position_embeddings"] * model_config["hidden_size"],  # wpe
-                    model_config["num_layers"] * (
-                        4 * model_config["hidden_size"] * model_config["hidden_size"] +  # attn
-                        2 * model_config["hidden_size"] * model_config["intermediate_size"]  # ffn
-                    ),
-                ]) / 1e6,
+                "params_millions": sum(
+                    [
+                        model_config["vocab_size"] * model_config["hidden_size"],  # wte
+                        model_config["max_position_embeddings"]
+                        * model_config["hidden_size"],  # wpe
+                        model_config["num_layers"]
+                        * (
+                            4
+                            * model_config["hidden_size"]
+                            * model_config["hidden_size"]  # attn
+                            + 2
+                            * model_config["hidden_size"]
+                            * model_config["intermediate_size"]  # ffn
+                        ),
+                    ]
+                )
+                / 1e6,
             },
             "training": {
                 "batch_size_per_gpu": train_config["batch_size_per_gpu"],
                 "global_batch_size": train_config["batch_size_per_gpu"] * world_size,
                 "seq_length": train_config["max_seq_length"],
                 "learning_rate": train_config["learning_rate"],
-                "gradient_accumulation_steps": train_config["gradient_accumulation_steps"],
+                "gradient_accumulation_steps": train_config[
+                    "gradient_accumulation_steps"
+                ],
             },
             "hardware": {
                 "num_gpus": world_size,
@@ -1115,10 +1224,7 @@ class MetricsLogger:
 
     def log_step(self, step, metrics):
         """Log metrics for a single step."""
-        self.metrics_history.append({
-            "step": step,
-            **metrics
-        })
+        self.metrics_history.append({"step": step, **metrics})
 
     def save(self, final_metrics):
         """Save all metrics to JSON file."""
@@ -1173,9 +1279,10 @@ def train_epoch(
         labels = batch["labels"].cuda()
 
         # Mixed precision forward pass
-        with torch.amp.autocast('cuda', dtype=torch.float16):
+        with torch.amp.autocast("cuda", dtype=torch.float16):
             outputs = model(input_ids, labels=labels)
             loss = outputs["loss"] / accumulation_steps
+            accuracy = outputs["accuracy"]
 
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()
@@ -1192,7 +1299,11 @@ def train_epoch(
         step_time = time.time() - step_start
         num_tokens = input_ids.numel() * world_size
         num_samples = input_ids.size(0) * world_size
-        metrics.update(loss.item() * accumulation_steps, num_tokens, num_samples, step_time)
+        current_loss = loss.item() * accumulation_steps
+        current_accuracy = accuracy.item() if accuracy is not None else 0.0
+        metrics.update(
+            current_loss, current_accuracy, num_tokens, num_samples, step_time
+        )
 
         # Log periodically
         if (step + 1) % log_interval == 0:
@@ -1205,13 +1316,26 @@ def train_epoch(
 
             metrics.reset()
 
-    # Return last logged metrics (metrics may have been reset)
-    return last_metrics if 'last_metrics' in locals() else metrics.get_metrics(log_interval)
+    # Get final metrics - use current accumulated metrics if available, otherwise last logged
+    steps_since_reset = (step + 1) % log_interval
+    if steps_since_reset > 0:
+        final_metrics = metrics.get_metrics(steps_since_reset)
+        # Print final step
+        metrics.log(step + 1, total_steps, final_metrics)
+    else:
+        final_metrics = (
+            last_metrics
+            if "last_metrics" in locals()
+            else metrics.get_metrics(log_interval)
+        )
+
+    return final_metrics
 
 
 # =============================================================================
 # SECTION 5: Test Functions
 # =============================================================================
+
 
 def test_data_loading():
     """Test dataset download and tokenization."""
@@ -1271,10 +1395,14 @@ def test_model_creation():
     # Test forward pass
     print("\n3. Testing forward pass...")
     batch_size, seq_len = 2, 128
-    input_ids = torch.randint(0, GPT2_TEST_CONFIG["vocab_size"], (batch_size, seq_len), device=device)
-    labels = torch.randint(0, GPT2_TEST_CONFIG["vocab_size"], (batch_size, seq_len), device=device)
+    input_ids = torch.randint(
+        0, GPT2_TEST_CONFIG["vocab_size"], (batch_size, seq_len), device=device
+    )
+    labels = torch.randint(
+        0, GPT2_TEST_CONFIG["vocab_size"], (batch_size, seq_len), device=device
+    )
 
-    with torch.amp.autocast('cuda', dtype=torch.float16):
+    with torch.amp.autocast("cuda", dtype=torch.float16):
         outputs = model(input_ids, labels=labels)
 
     print(f"   Loss: {outputs['loss'].item():.4f}")
@@ -1316,7 +1444,9 @@ def test_ddp_training():
         train_dataset = WikiTextDataset(train_data)
 
         # Distributed sampler
-        sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+        )
         train_loader = DataLoader(
             train_dataset,
             batch_size=4,
@@ -1330,11 +1460,13 @@ def test_ddp_training():
         if rank == 0:
             print("\n2. Creating model with DDP...")
         model = GPT2Model(GPT2_TEST_CONFIG).cuda()
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank]
+        )
 
         # Optimizer and scaler
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-        scaler = torch.amp.GradScaler('cuda')
+        scaler = torch.amp.GradScaler("cuda")
 
         # Train a few steps
         if rank == 0:
@@ -1348,7 +1480,7 @@ def test_ddp_training():
             input_ids = batch["input_ids"].cuda()
             labels = batch["labels"].cuda()
 
-            with torch.amp.autocast('cuda', dtype=torch.float16):
+            with torch.amp.autocast("cuda", dtype=torch.float16):
                 outputs = model(input_ids, labels=labels)
                 loss = outputs["loss"]
 
@@ -1376,6 +1508,7 @@ def test_ddp_training():
 # =============================================================================
 # SECTION 6: Main Training Functions
 # =============================================================================
+
 
 def train_single_gpu(args):
     """Single GPU training for scaling efficiency measurement."""
@@ -1438,15 +1571,21 @@ def train_single_gpu(args):
         )
 
         total_steps = len(train_loader) * train_config["num_epochs"]
-        scheduler = get_lr_scheduler(optimizer, train_config["warmup_steps"], total_steps)
-        scaler = torch.amp.GradScaler('cuda')
+        scheduler = get_lr_scheduler(
+            optimizer, train_config["warmup_steps"], total_steps
+        )
+        scaler = torch.amp.GradScaler("cuda")
 
-        print(f"\nTraining for {train_config['num_epochs']} epoch(s), {total_steps} steps")
+        print(
+            f"\nTraining for {train_config['num_epochs']} epoch(s), {total_steps} steps"
+        )
         print(f"Batch size: {train_config['batch_size_per_gpu']}")
 
         # Calculate theoretical FLOPs info
         flops_per_step = calculate_model_flops(
-            model_config, train_config["batch_size_per_gpu"], train_config["max_seq_length"]
+            model_config,
+            train_config["batch_size_per_gpu"],
+            train_config["max_seq_length"],
         )
         print(f"FLOPs per step: {flops_per_step / 1e12:.2f} TFLOPs")
         print(f"Theoretical peak (1x A100): {A100_PEAK_FLOPS_FP16 / 1e12:.0f} TFLOPs")
@@ -1478,9 +1617,10 @@ def train_single_gpu(args):
                 labels = batch["labels"].to(device)
 
                 # Forward pass with mixed precision
-                with torch.amp.autocast('cuda', dtype=torch.float16):
+                with torch.amp.autocast("cuda", dtype=torch.float16):
                     outputs = model(input_ids, labels=labels)
                     loss = outputs["loss"] / accumulation_steps
+                    accuracy = outputs["accuracy"]
 
                 # Backward pass
                 scaler.scale(loss).backward()
@@ -1497,7 +1637,11 @@ def train_single_gpu(args):
                 step_time = time.time() - step_start
                 num_tokens = input_ids.numel()
                 num_samples = input_ids.size(0)
-                metrics.update(loss.item() * accumulation_steps, num_tokens, num_samples, step_time)
+                current_loss = loss.item() * accumulation_steps
+                current_accuracy = accuracy.item() if accuracy is not None else 0.0
+                metrics.update(
+                    current_loss, current_accuracy, num_tokens, num_samples, step_time
+                )
 
                 # Log periodically
                 if (step + 1) % log_interval == 0:
@@ -1507,14 +1651,25 @@ def train_single_gpu(args):
                     metrics.reset()
 
         training_time = time.time() - start_time
-        # Use last logged metrics for final summary (metrics may have been reset)
-        final_metrics = last_metrics if 'last_metrics' in locals() else metrics.get_metrics(log_interval)
+        # Get final metrics - use current accumulated metrics if available, otherwise last logged
+        steps_since_reset = (step + 1) % log_interval
+        if steps_since_reset > 0:
+            final_metrics = metrics.get_metrics(steps_since_reset)
+            # Print final step
+            metrics.log(step + 1, total_steps, final_metrics)
+        else:
+            final_metrics = (
+                last_metrics
+                if "last_metrics" in locals()
+                else metrics.get_metrics(log_interval)
+            )
         mem_used = torch.cuda.max_memory_allocated() / 1024**3
         gpu_util = get_gpu_utilization()
 
         # Prepare final results
         final_results = {
             "final_loss": final_metrics["loss"],
+            "accuracy": final_metrics["accuracy"],
             "throughput_tokens_per_sec": final_metrics["throughput_tokens_per_sec"],
             "throughput_samples_per_sec": final_metrics["throughput_samples_per_sec"],
             "mfu_percent": final_metrics["mfu_percent"],
@@ -1533,7 +1688,10 @@ def train_single_gpu(args):
         print("TRAINING COMPLETE (Single GPU)")
         print(f"{'=' * 60}")
         print(f"Final loss:           {final_metrics['loss']:.4f}")
-        print(f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)")
+        print(f"Accuracy:             {final_metrics['accuracy']:.1f}%")
+        print(
+            f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)"
+        )
         print(f"MFU:                  {final_metrics['mfu_percent']:.1f}%")
         print(f"Achieved TFLOPs:      {final_metrics['achieved_tflops']:.1f}")
         print(f"Peak GPU memory:      {mem_used:.2f} GB")
@@ -1592,7 +1750,9 @@ def train_baseline_ddp(args):
         train_dataset = WikiTextDataset(train_data)
 
         # DataLoader with distributed sampler
-        sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+        )
         train_loader = DataLoader(
             train_dataset,
             batch_size=train_config["batch_size_per_gpu"],
@@ -1606,7 +1766,9 @@ def train_baseline_ddp(args):
         if rank == 0:
             print("\nCreating GPT-2 model...")
         model = GPT2Model(model_config).cuda()
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank]
+        )
 
         # Optimizer, scheduler, scaler
         optimizer = torch.optim.AdamW(
@@ -1616,26 +1778,38 @@ def train_baseline_ddp(args):
         )
 
         total_steps = len(train_loader) * train_config["num_epochs"]
-        scheduler = get_lr_scheduler(optimizer, train_config["warmup_steps"], total_steps)
-        scaler = torch.amp.GradScaler('cuda')
+        scheduler = get_lr_scheduler(
+            optimizer, train_config["warmup_steps"], total_steps
+        )
+        scaler = torch.amp.GradScaler("cuda")
 
         if rank == 0:
-            print(f"\nTraining for {train_config['num_epochs']} epoch(s), {total_steps} steps")
+            print(
+                f"\nTraining for {train_config['num_epochs']} epoch(s), {total_steps} steps"
+            )
             print(f"Batch size per GPU: {train_config['batch_size_per_gpu']}")
-            print(f"Global batch size: {train_config['batch_size_per_gpu'] * world_size}")
+            print(
+                f"Global batch size: {train_config['batch_size_per_gpu'] * world_size}"
+            )
 
             # Calculate theoretical FLOPs info
             flops_per_step = calculate_model_flops(
-                model_config, train_config["batch_size_per_gpu"], train_config["max_seq_length"]
+                model_config,
+                train_config["batch_size_per_gpu"],
+                train_config["max_seq_length"],
             )
             print(f"FLOPs per step (per GPU): {flops_per_step / 1e12:.2f} TFLOPs")
-            print(f"Theoretical peak (4x A100): {A100_PEAK_FLOPS_FP16 * world_size / 1e12:.0f} TFLOPs")
+            print(
+                f"Theoretical peak (4x A100): {A100_PEAK_FLOPS_FP16 * world_size / 1e12:.0f} TFLOPs"
+            )
 
         # Initialize metrics logger (only on rank 0)
         metrics_logger = None
         if rank == 0:
             metrics_logger = MetricsLogger(output_dir="results")
-            metrics_logger.log_config("baseline", model_config, train_config, world_size)
+            metrics_logger.log_config(
+                "baseline", model_config, train_config, world_size
+            )
 
         # Training loop
         training_start_time = time.time()
@@ -1670,8 +1844,11 @@ def train_baseline_ddp(args):
             # Prepare final results
             final_results = {
                 "final_loss": final_metrics["loss"],
+                "accuracy": final_metrics["accuracy"],
                 "throughput_tokens_per_sec": final_metrics["throughput_tokens_per_sec"],
-                "throughput_samples_per_sec": final_metrics["throughput_samples_per_sec"],
+                "throughput_samples_per_sec": final_metrics[
+                    "throughput_samples_per_sec"
+                ],
                 "mfu_percent": final_metrics["mfu_percent"],
                 "achieved_tflops": final_metrics["achieved_tflops"],
                 "peak_memory_gb": mem_used,
@@ -1687,7 +1864,10 @@ def train_baseline_ddp(args):
             print("TRAINING COMPLETE")
             print(f"{'=' * 60}")
             print(f"Final loss:           {final_metrics['loss']:.4f}")
-            print(f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)")
+            print(f"Accuracy:             {final_metrics['accuracy']:.1f}%")
+            print(
+                f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)"
+            )
             print(f"MFU:                  {final_metrics['mfu_percent']:.1f}%")
             print(f"Achieved TFLOPs:      {final_metrics['achieved_tflops']:.1f}")
             print(f"Peak GPU memory:      {mem_used:.2f} GB")
@@ -1712,7 +1892,7 @@ def train_hybrid(args):
     torch.cuda.set_device(local_rank)
 
     # Get TP size from args
-    tp_size = getattr(args, 'tp_size', 1)
+    tp_size = getattr(args, "tp_size", 1)
     use_tp = tp_size > 1
 
     # Initialize TP groups if using tensor parallelism
@@ -1770,29 +1950,60 @@ def train_hybrid(args):
         if rank == 0:
             print("\nCreating GPT-2 model...")
 
+        # Check for optimization modes
+        use_triton = getattr(args, "use_triton", False)
+        use_fused_kernel = getattr(args, "use_fused_kernel", False)
+
         # Use TP model if tensor parallelism is enabled
         if use_tp:
-            model = TPModel(model_config, use_gradient_checkpointing=True)
+            if use_triton:
+                # Use Triton fused kernels for TP layers (novelty feature)
+                from triton_tp_layers import TritonTPModel
+
+                if rank == 0:
+                    print("Using Triton fused kernels for TP layers...")
+                model = TritonTPModel(model_config, use_gradient_checkpointing=True)
+            elif use_fused_kernel:
+                # Use custom CUDA fused bias+GELU kernel
+                if rank == 0:
+                    print("Using custom CUDA fused bias+GELU kernel...")
+                model = TPModel(
+                    model_config, use_gradient_checkpointing=True, use_fused_kernel=True
+                )
+            else:
+                model = TPModel(model_config, use_gradient_checkpointing=True)
         else:
+            if use_triton and rank == 0:
+                print("Warning: --use-triton requires --tp-size > 1, ignoring...")
+            if use_fused_kernel and rank == 0:
+                print("Warning: --use-fused-kernel requires --tp-size > 1, ignoring...")
             # Enable gradient checkpointing alongside ZeRO-3 for maximum memory efficiency
             model = GPT2Model(model_config, use_gradient_checkpointing=True)
 
         # Load DeepSpeed config
-        ds_config_path = args.deepspeed_config if args.deepspeed_config else "ds_config_zero3.json"
+        ds_config_path = (
+            args.deepspeed_config if args.deepspeed_config else "ds_config_zero3.json"
+        )
 
         # Update DeepSpeed config with actual training params
         with open(ds_config_path, "r") as f:
             ds_config = json.load(f)
 
         ds_config["train_micro_batch_size_per_gpu"] = train_config["batch_size_per_gpu"]
-        ds_config["gradient_accumulation_steps"] = train_config["gradient_accumulation_steps"]
+        ds_config["gradient_accumulation_steps"] = train_config[
+            "gradient_accumulation_steps"
+        ]
 
         # Calculate total steps for scheduler
         total_samples = len(train_dataset)
-        total_steps = (total_samples // (train_config["batch_size_per_gpu"] * world_size)) * train_config["num_epochs"]
+        total_steps = (
+            total_samples // (train_config["batch_size_per_gpu"] * world_size)
+        ) * train_config["num_epochs"]
 
         # Update warmup steps (WarmupLR doesn't need total_num_steps)
-        ds_config["scheduler"]["params"]["warmup_num_steps"] = min(train_config["warmup_steps"], max(1, total_steps // 10))
+        ds_config["scheduler"]["params"]["warmup_num_steps"] = min(
+            train_config["warmup_steps"], max(1, total_steps // 10)
+        )
 
         # Initialize DeepSpeed
         model_engine, optimizer, train_loader, lr_scheduler = deepspeed.initialize(
@@ -1806,21 +2017,29 @@ def train_hybrid(args):
         if rank == 0:
             print(f"\nTraining for {train_config['num_epochs']} epoch(s)")
             print(f"Batch size per GPU: {train_config['batch_size_per_gpu']}")
-            print(f"Global batch size: {train_config['batch_size_per_gpu'] * world_size}")
+            print(
+                f"Global batch size: {train_config['batch_size_per_gpu'] * world_size}"
+            )
             print(f"ZeRO Stage: {ds_config['zero_optimization']['stage']}")
 
             # Calculate theoretical FLOPs info
             flops_per_step = calculate_model_flops(
-                model_config, train_config["batch_size_per_gpu"], train_config["max_seq_length"]
+                model_config,
+                train_config["batch_size_per_gpu"],
+                train_config["max_seq_length"],
             )
             print(f"FLOPs per step (per GPU): {flops_per_step / 1e12:.2f} TFLOPs")
-            print(f"Theoretical peak (4x A100): {A100_PEAK_FLOPS_FP16 * world_size / 1e12:.0f} TFLOPs")
+            print(
+                f"Theoretical peak (4x A100): {A100_PEAK_FLOPS_FP16 * world_size / 1e12:.0f} TFLOPs"
+            )
 
         # Initialize metrics logger (only on rank 0)
         metrics_logger = None
         if rank == 0:
             metrics_logger = MetricsLogger(output_dir="results")
-            metrics_logger.log_config("hybrid_zero3", model_config, train_config, world_size)
+            metrics_logger.log_config(
+                "hybrid_zero3", model_config, train_config, world_size
+            )
 
         # Training loop
         training_start_time = time.time()
@@ -1846,6 +2065,7 @@ def train_hybrid(args):
                 # Forward pass (DeepSpeed handles mixed precision)
                 outputs = model_engine(input_ids, labels=labels)
                 loss = outputs["loss"]
+                accuracy = outputs["accuracy"]
 
                 # Backward pass (DeepSpeed handles gradient scaling)
                 model_engine.backward(loss)
@@ -1856,7 +2076,11 @@ def train_hybrid(args):
                 step_time = time.time() - step_start
                 num_tokens = input_ids.numel() * world_size
                 num_samples = input_ids.size(0) * world_size
-                metrics.update(loss.item(), num_tokens, num_samples, step_time)
+                current_loss = loss.item()
+                current_accuracy = accuracy.item() if accuracy is not None else 0.0
+                metrics.update(
+                    current_loss, current_accuracy, num_tokens, num_samples, step_time
+                )
                 total_steps_done += 1
 
                 # Log periodically
@@ -1870,8 +2094,18 @@ def train_hybrid(args):
                     metrics.reset()
 
         training_time = time.time() - training_start_time
-        # Use last logged metrics for final summary (metrics may have been reset)
-        final_metrics = last_metrics if 'last_metrics' in locals() else metrics.get_metrics(log_interval)
+        # Get final metrics - use current accumulated metrics if available, otherwise last logged
+        steps_since_reset = (step + 1) % log_interval
+        if steps_since_reset > 0:
+            final_metrics = metrics.get_metrics(steps_since_reset)
+            # Print final step
+            metrics.log(step + 1, len(train_loader), final_metrics)
+        else:
+            final_metrics = (
+                last_metrics
+                if "last_metrics" in locals()
+                else metrics.get_metrics(log_interval)
+            )
 
         # Final stats
         dist.barrier()
@@ -1882,8 +2116,11 @@ def train_hybrid(args):
             # Prepare final results
             final_results = {
                 "final_loss": final_metrics["loss"],
+                "accuracy": final_metrics["accuracy"],
                 "throughput_tokens_per_sec": final_metrics["throughput_tokens_per_sec"],
-                "throughput_samples_per_sec": final_metrics["throughput_samples_per_sec"],
+                "throughput_samples_per_sec": final_metrics[
+                    "throughput_samples_per_sec"
+                ],
                 "mfu_percent": final_metrics["mfu_percent"],
                 "achieved_tflops": final_metrics["achieved_tflops"],
                 "peak_memory_gb": mem_used,
@@ -1894,23 +2131,41 @@ def train_hybrid(args):
                 "tp_size": tp_size,
                 "dp_size": dp_size,
                 "use_tp": use_tp,
+                "use_triton": use_triton,
+                "use_fused_kernel": use_fused_kernel,
             }
 
             # Save to JSON
             results_file = metrics_logger.save(final_results)
 
-            mode_str = f"Hybrid ZeRO-3 + TP={tp_size}" if use_tp else "Hybrid ZeRO-3"
+            if use_tp:
+                mode_str = f"Hybrid ZeRO-3 + TP={tp_size}"
+                if use_triton:
+                    mode_str += " + Triton"
+                elif use_fused_kernel:
+                    mode_str += " + CUDA Fused"
+            else:
+                mode_str = "Hybrid ZeRO-3"
             print(f"\n{'=' * 60}")
             print(f"TRAINING COMPLETE ({mode_str})")
             print(f"{'=' * 60}")
             print(f"Final loss:           {final_metrics['loss']:.4f}")
-            print(f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)")
+            print(f"Accuracy:             {final_metrics['accuracy']:.1f}%")
+            print(
+                f"Throughput:           {final_metrics['throughput_tokens_per_sec']:.0f} tokens/sec ({final_metrics['throughput_samples_per_sec']:.1f} samples/sec)"
+            )
             print(f"MFU:                  {final_metrics['mfu_percent']:.1f}%")
             print(f"Achieved TFLOPs:      {final_metrics['achieved_tflops']:.1f}")
             print(f"Peak GPU memory:      {mem_used:.2f} GB")
             print(f"Total training time:  {training_time:.1f} sec")
             if use_tp:
                 print(f"Parallelism:          DP={dp_size} × TP={tp_size}")
+            if use_triton:
+                print(
+                    f"Triton kernels:       Enabled (FusedLinearGELU, FusedLinearDropout)"
+                )
+            if use_fused_kernel:
+                print(f"CUDA fused kernel:    Enabled (Fused Bias+GELU)")
             print(f"Results saved to:     {results_file}")
             print("=" * 60)
 
@@ -1924,7 +2179,7 @@ def train_hybrid(args):
             tp_group.cleanup()
 
         # DeepSpeed cleanup
-        if 'model_engine' in locals():
+        if "model_engine" in locals():
             del model_engine
         torch.cuda.empty_cache()
 
@@ -1933,35 +2188,80 @@ def train_hybrid(args):
 # SECTION 7: Main Entry Point
 # =============================================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="GPT-2 Hybrid Parallelism Training")
 
     # Test modes
-    parser.add_argument("--test-data", action="store_true", help="Test data loading only")
-    parser.add_argument("--test-model", action="store_true", help="Test model creation (single GPU)")
-    parser.add_argument("--test-ddp", action="store_true", help="Test DDP training (multi-GPU)")
+    parser.add_argument(
+        "--test-data", action="store_true", help="Test data loading only"
+    )
+    parser.add_argument(
+        "--test-model", action="store_true", help="Test model creation (single GPU)"
+    )
+    parser.add_argument(
+        "--test-ddp", action="store_true", help="Test DDP training (multi-GPU)"
+    )
 
     # Training modes
-    parser.add_argument("--mode", choices=["baseline", "hybrid", "single"], default="baseline",
-                        help="Training mode: single (1 GPU), baseline (DDP), or hybrid (DP×TP)")
-    parser.add_argument("--test", action="store_true", help="Use small model/data for testing")
+    parser.add_argument(
+        "--mode",
+        choices=["baseline", "hybrid", "single"],
+        default="baseline",
+        help="Training mode: single (1 GPU), baseline (DDP), or hybrid (DP×TP)",
+    )
+    parser.add_argument(
+        "--test", action="store_true", help="Use small model/data for testing"
+    )
 
     # Data options
-    parser.add_argument("--max-samples", type=int, default=None,
-                        help="Limit training samples (e.g., 10000 for quick runs)")
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit training samples (e.g., 10000 for quick runs)",
+    )
 
     # Training options
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Batch size per GPU (default: 8). Increase for better MFU with TP.")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size per GPU (default: 8). Increase for better MFU with TP.",
+    )
 
     # DeepSpeed (for hybrid mode)
-    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for DeepSpeed")
-    parser.add_argument("--deepspeed-config", type=str, default="ds_config_zero3.json",
-                        help="Path to DeepSpeed config file")
+    parser.add_argument(
+        "--local_rank", type=int, default=-1, help="Local rank for DeepSpeed"
+    )
+    parser.add_argument(
+        "--deepspeed-config",
+        type=str,
+        default="ds_config_zero3.json",
+        help="Path to DeepSpeed config file",
+    )
 
     # Tensor Parallelism
-    parser.add_argument("--tp-size", type=int, default=1,
-                        help="Tensor parallel size (1=disabled, 2=split across 2 GPUs)")
+    parser.add_argument(
+        "--tp-size",
+        type=int,
+        default=1,
+        help="Tensor parallel size (1=disabled, 2=split across 2 GPUs)",
+    )
+
+    # Triton fused kernels (novelty feature)
+    parser.add_argument(
+        "--use-triton",
+        action="store_true",
+        help="Use Triton fused kernels for TP layers (requires --tp-size > 1)",
+    )
+
+    # Custom CUDA fused kernels (novelty feature)
+    parser.add_argument(
+        "--use-fused-kernel",
+        action="store_true",
+        help="Use custom CUDA fused bias+GELU kernel for TP layers (requires --tp-size > 1)",
+    )
 
     args = parser.parse_args()
 
