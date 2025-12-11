@@ -44,7 +44,7 @@ test_data() {
   echo "Testing data loading..."
   echo ""
 
-  python train.py --test-data
+  python3 train.py --test-data
 }
 
 # -----------------------------------------------------------------------------
@@ -55,7 +55,7 @@ test_model() {
   echo "Testing model creation..."
   echo ""
 
-  python train.py --test-model
+  python3 train.py --test-model
 }
 
 # -----------------------------------------------------------------------------
@@ -77,7 +77,7 @@ run_single_gpu() {
   echo "Running single GPU training (scaling baseline)..."
   echo ""
 
-  python train.py --mode single --max-samples 5000
+  python3 train.py --mode single --max-samples 5000
 }
 
 # -----------------------------------------------------------------------------
@@ -220,7 +220,7 @@ test_fused_kernel() {
   echo "Testing CUDA fused bias+GELU kernel correctness..."
   echo ""
 
-  python tests/test_fused_kernel.py
+  python3 tests/test_fused_kernel.py
 }
 
 # -----------------------------------------------------------------------------
@@ -231,7 +231,7 @@ test_triton_kernels() {
   echo "Testing Triton fused kernel correctness..."
   echo ""
 
-  python tests/test_triton_kernels.py
+  python3 tests/test_triton_kernels.py
 }
 
 # -----------------------------------------------------------------------------
@@ -242,7 +242,7 @@ run_microbenchmark() {
   echo "Running microbenchmark for detailed performance analysis..."
   echo ""
 
-  python benchmarks/microbenchmark.py
+  python3 benchmarks/microbenchmark.py
 }
 
 # -----------------------------------------------------------------------------
@@ -253,7 +253,7 @@ run_microbenchmark_detailed() {
   echo "Running microbenchmark with PyTorch profiler..."
   echo ""
 
-  python benchmarks/microbenchmark.py --detailed
+  python3 benchmarks/microbenchmark.py --detailed
 }
 
 # -----------------------------------------------------------------------------
@@ -265,7 +265,7 @@ run_microbenchmark_csv() {
   echo ""
 
   mkdir -p results
-  python benchmarks/microbenchmark.py --export-csv results/microbench.csv
+  python3 benchmarks/microbenchmark.py --export-csv results/microbench.csv
 }
 
 # -----------------------------------------------------------------------------
@@ -278,7 +278,7 @@ run_full_comparison() {
   echo ""
 
   echo "1/7: Single GPU baseline..."
-  python train.py --mode single --max-samples 5000
+  python3 train.py --mode single --max-samples 5000
 
   echo "2/7: Baseline DDP (4 GPUs)..."
   torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
@@ -316,7 +316,7 @@ run_full_benchmark() {
 
   # Run microbenchmark
   echo "Running microbenchmark..."
-  python benchmarks/microbenchmark.py --export-csv results/microbench.csv
+  python3 benchmarks/microbenchmark.py --export-csv results/microbench.csv
 
   echo ""
   echo "Full benchmark complete!"
