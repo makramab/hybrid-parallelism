@@ -26,10 +26,9 @@ We train **GPT-2 Large (774M parameters)** on **WikiText-103** using 4 NVIDIA A1
 ## Project Structure
 
 ```
-hybrid-parallelism/
+hpml/
 ├── train.py                    # Main training script with all modes
 ├── ds_config_zero3.json        # DeepSpeed ZeRO-3 configuration
-├── setup_and_run.sh            # Helper script for NYU HPC
 ├── fused_kernels/              # Custom CUDA fused kernels
 │   ├── __init__.py
 │   ├── bias_gelu_cuda.cu       # CUDA kernel implementation
@@ -41,8 +40,6 @@ hybrid-parallelism/
 │   ├── test_fused_kernel.py    # CUDA kernel correctness tests
 │   └── test_triton_kernels.py  # Triton kernel tests
 ├── results/                    # Training results (JSON files)
-├── CONTEXT.md                  # Project context and background
-├── REPORT_DRAFT.tex            # IEEE format report draft
 └── README.md                   # This file
 ```
 
@@ -55,64 +52,77 @@ hybrid-parallelism/
 - 4× NVIDIA A100 GPUs (40GB each)
 - CUDA 12.x (for custom kernels)
 
-### Installation
+## Quick Start (NYU HPC)
+
+### Step 1: Enter Singularity Container
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install transformers datasets tqdm accelerate deepspeed
-```
-
-## Quick Start
-
-### NYU HPC Setup
-
-```bash
-# 1. Enter Singularity container
 /scratch/work/public/singularity/run-cuda-12.2.2.bash
-
-# 2. Navigate to project
-cd /path/to/hybrid-parallelism
-
-# 3. Source helper script (provides all commands as functions)
-source setup_and_run.sh
-
-# 4. Install dependencies (first time only)
-install_dependencies
-
-# 5. Run tests
-test_data && test_model && test_ddp
-test_fused_kernel
-
-# 6. Run benchmarks
-run_microbenchmark
-
-# 7. Run full comparison
-run_full_comparison
 ```
 
-### Direct Commands
-
-If you prefer running commands directly instead of using the helper script:
-
-#### 1. Single GPU (Scaling Baseline)
+### Step 2: Navigate to Project
 
 ```bash
-python train.py --mode single --max-samples 5000
+cd /path/to/hpml
 ```
 
-#### 2. Baseline DDP (4 GPUs)
+### Step 3: Install Dependencies
+
+```bash
+pip3 install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip3 install --user transformers datasets tqdm accelerate deepspeed
+```
+
+### Step 4: Run Tests
+
+```bash
+# Test data loading
+python3 train.py --test-data
+
+# Test model creation (single GPU)
+python3 train.py --test-model
+
+# Test DDP training (4 GPUs)
+torchrun --nproc_per_node=4 train.py --test-ddp
+
+# Test CUDA fused kernel correctness
+python3 tests/test_fused_kernel.py
+```
+
+### Step 5: Run Microbenchmark
+
+```bash
+# Basic microbenchmark
+python3 benchmarks/microbenchmark.py
+
+# With PyTorch profiler for kernel-level details
+python3 benchmarks/microbenchmark.py --detailed
+
+# Export to CSV
+python3 benchmarks/microbenchmark.py --export-csv results/microbench.csv
+```
+
+## Training Commands
+
+### 1. Single GPU (Scaling Baseline)
+
+```bash
+python3 train.py --mode single --max-samples 5000
+```
+
+### 2. Baseline DDP (4 GPUs)
 
 ```bash
 torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
 ```
 
-#### 3. Hybrid ZeRO-3 (4 GPUs)
+### 3. Hybrid ZeRO-3 (4 GPUs)
 
 ```bash
 deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
 ```
 
-#### 4. Hybrid DP×TP (DP=2, TP=2)
+### 4. Hybrid DP×TP (DP=2, TP=2)
 
 ```bash
 # Default batch size (memory efficient)
@@ -122,10 +132,14 @@ deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-samples 5000
 ```
 
-#### 5. Hybrid DP×TP + Custom CUDA Fused Kernel
+### 5. Hybrid DP×TP + Custom CUDA Fused Kernel
 
 ```bash
+# Default batch size
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
+
+# Larger batch size
+deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --batch-size 32 --max-samples 5000
 ```
 
 ## Command Line Arguments
@@ -137,47 +151,36 @@ deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --m
 | `--batch-size` | Batch size per GPU | `8` |
 | `--max-samples` | Limit training samples for quick tests | None (full) |
 | `--use-fused-kernel` | Use custom CUDA fused bias+GELU kernel | False |
-| `--use-triton` | Use Triton fused kernels | False |
 | `--test` | Use small model/data for testing | False |
 
-## Benchmarking
+## Full Comparison (For Report)
 
-### Microbenchmark (Detailed Operation Profiling)
-
-The microbenchmark script profiles individual operations to show time breakdown:
+Run all configurations sequentially:
 
 ```bash
-# Basic microbenchmark
-python benchmarks/microbenchmark.py
+# 1. Single GPU baseline
+python3 train.py --mode single --max-samples 5000
 
-# With PyTorch profiler for kernel-level details
-python benchmarks/microbenchmark.py --detailed
+# 2. Baseline DDP (4 GPUs)
+torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
 
-# Export to CSV
-python benchmarks/microbenchmark.py --export-csv results/microbench.csv
+# 3. Hybrid ZeRO-3 (4 GPUs)
+deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
+
+# 4. Hybrid DP×TP (DP=2, TP=2)
+deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
+
+# 5. Hybrid DP×TP + CUDA fused kernel
+deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
+
+# 6. Hybrid DP×TP with larger batch (leverage memory savings)
+deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-samples 5000
+
+# 7. Hybrid DP×TP + CUDA fused with larger batch
+deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --batch-size 32 --max-samples 5000
 ```
 
-### Using Helper Script
-
-```bash
-source setup_and_run.sh
-
-# Run microbenchmark
-run_microbenchmark
-
-# Run with profiler
-run_microbenchmark_detailed
-
-# Export to CSV
-run_microbenchmark_csv
-```
-
-### Test Custom CUDA Kernels
-
-```bash
-# Test fused bias+GELU kernel correctness and performance
-python tests/test_fused_kernel.py
-```
+Results are saved to `results/` as JSON files with metrics including loss, accuracy, throughput, and MFU.
 
 ## Architecture
 
@@ -224,50 +227,11 @@ Performance results:
 
 The training script tracks:
 
+- **Loss**: Cross-entropy loss for next-token prediction
+- **Accuracy**: Top-1 token prediction accuracy (%)
 - **Throughput**: Tokens/second and samples/second
 - **MFU (Model FLOPs Utilization)**: Achieved FLOPs / Theoretical peak FLOPs
 - **Peak Memory**: GPU memory usage
-- **Scaling Efficiency**: Multi-GPU throughput vs single-GPU baseline
-
-Results are saved to `results/` as JSON files.
-
-## Full Comparison (For Report)
-
-Run all configurations for comprehensive comparison:
-
-```bash
-# Using helper script (recommended)
-source setup_and_run.sh
-run_full_comparison
-
-# Or run full benchmark suite (training + microbenchmark)
-run_full_benchmark
-```
-
-### Manual Commands
-
-```bash
-# 1. Single GPU baseline
-python train.py --mode single --max-samples 5000
-
-# 2. Baseline DDP (4 GPUs)
-torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
-
-# 3. Hybrid ZeRO-3 (4 GPUs)
-deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
-
-# 4. Hybrid DP×TP with default batch
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
-
-# 5. Hybrid DP×TP + CUDA fused kernel
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
-
-# 6. Hybrid DP×TP with larger batch (leverage memory savings)
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-samples 5000
-
-# 7. Hybrid DP×TP + CUDA fused with larger batch
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --batch-size 32 --max-samples 5000
-```
 
 ### Calculating Scaling Efficiency
 
@@ -294,7 +258,7 @@ rm -rf ~/.cache/torch_extensions/
 nvcc --version
 
 # Check PyTorch CUDA version matches system CUDA
-python -c "import torch; print(torch.version.cuda)"
+python3 -c "import torch; print(torch.version.cuda)"
 ```
 
 ### DeepSpeed Issues
@@ -304,7 +268,7 @@ python -c "import torch; print(torch.version.cuda)"
 ds_report
 
 # Verify distributed setup
-python -c "import torch.distributed as dist; print('OK')"
+python3 -c "import torch.distributed as dist; print('OK')"
 ```
 
 ### Memory Issues
@@ -327,7 +291,7 @@ If running out of memory:
 
 ## Authors
 
-- M. Akram Bari (<ma9091@nyu.edu>)
-- Yashas Harisha (<yh5569@nyu.edu>)
+- M. Akram Bari (ma9091@nyu.edu)
+- Yashas Harisha (yh5569@nyu.edu)
 
 New York University - High Performance Machine Learning (HPML)
