@@ -4,24 +4,87 @@ This project investigates hybrid parallelism techniques for improving the perfor
 
 ## Overview
 
-We train **GPT-2 Large (774M parameters)** on **WikiText-103** using 4 NVIDIA A100 GPUs, comparing different parallelism strategies:
+We train **GPT-2 Large (774M parameters)** on **WikiText-103** using 4 NVIDIA A100 GPUs, comparing different parallelism strategies.
 
-| Configuration | Description | Memory | MFU |
-|---------------|-------------|--------|-----|
-| **Single GPU** | Baseline for scaling efficiency | ~21 GB | ~45% |
-| **Baseline DDP** | PyTorch Distributed Data Parallel | ~21 GB | ~43% |
-| **Hybrid ZeRO-3** | DeepSpeed ZeRO-3 optimizer sharding | ~20 GB | ~26% |
-| **Hybrid DP×TP** | ZeRO-3 + Tensor Parallelism (DP=2, TP=2) | **~6 GB** | ~52%* |
-| **Hybrid DP×TP + Fused** | With custom CUDA fused kernels | **~6 GB** | ~52%* |
+## Results
 
-*MFU varies with batch size - larger batches leverage memory savings for higher MFU.
+### Training Configurations Comparison
 
-## Key Results
+| Configuration | Batch/GPU | Throughput (tok/s) | MFU | Memory | Training Time |
+|--------------|-----------|-------------------|-----|--------|---------------|
+| **Baseline DDP** | 8 | 75,130 | 33.2% | 21.37 GB | 75.7s |
+| **ZeRO-3** | 8 | 44,948 | 19.8% | 8.33 GB | 109.5s |
+| **ZeRO-3 + TP** | 8 | 43,093 | 19.0% | 6.36 GB | 116.0s |
+| **ZeRO-3 + TP + CUDA Fused** | 8 | 42,750 | 18.9% | 6.36 GB | 117.9s |
+| **ZeRO-3 + TP** | 32 | 121,000 | **52.6%** | 17.81 GB | 46.6s |
+| **ZeRO-3 + TP + CUDA Fused** | 32 | 118,717 | 51.7% | 17.81 GB | 47.6s |
 
-- **70% Memory Reduction**: Hybrid DP×TP reduces memory from 21GB to 6GB per GPU
-- **Batch Size Scaling**: With lower memory, batch size can be increased 4× for better MFU
-- **52% MFU Achieved**: With batch size 32, Hybrid DP×TP reaches 52% MFU (vs 19% with batch 8)
-- **Custom CUDA Kernels**: Fused bias+GELU kernel achieves 1.12-1.18× speedup for the operation
+### Microbenchmark Results (GELU Kernel)
+
+| Configuration | PyTorch (ms) | CUDA Fused (ms) | Speedup |
+|--------------|--------------|-----------------|---------|
+| Small [4, 512, 1024] | 0.0228 | 0.0286 | 0.80x |
+| Medium [8, 512, 2048] | 0.0813 | 0.0687 | 1.18x |
+| GPT-2 Large [8, 1024, 5120] | 0.3594 | 0.3212 | 1.12x |
+
+### MLP Operation Breakdown
+
+| Operation | Time (ms) | % of MLP |
+|-----------|-----------|----------|
+| Linear (up-projection) | 0.5992 | 48.4% |
+| GELU | 0.1319 | 10.7% |
+| Linear (down-projection) | 0.4457 | 36.0% |
+| Dropout | 0.0492 | 4.0% |
+| **Full MLP** | **1.2378** | **100%** |
+
+## Key Findings
+
+### 1. Memory Reduction with ZeRO-3 + Tensor Parallelism
+
+- **70% memory reduction**: From 21.37 GB (Baseline) to 6.36 GB (ZeRO-3 + TP)
+- ZeRO-3 alone reduces memory to 8.33 GB (61% reduction)
+- Adding Tensor Parallelism further reduces to 6.36 GB
+
+### 2. Throughput vs Memory Trade-off (Batch Size 8)
+
+- At small batch sizes, memory-efficient configurations have lower throughput
+- Baseline DDP: 75,130 tok/s (33.2% MFU)
+- ZeRO-3 + TP: 43,093 tok/s (19.0% MFU)
+- This is due to communication overhead from parameter sharding and tensor parallel all-reduce operations
+
+### 3. Leveraging Memory Savings with Larger Batch Sizes
+
+- **Key insight**: Memory savings enable larger batch sizes, which improves MFU
+- With batch size 32, ZeRO-3 + TP achieves:
+  - **121,000 tok/s** throughput (vs 75,130 tok/s baseline)
+  - **52.6% MFU** (vs 33.2% baseline)
+  - **1.6x faster training** (46.6s vs 75.7s)
+
+### 4. Custom CUDA Fused Kernel Analysis
+
+- The fused bias+GELU kernel shows **1.12x speedup** for the GELU operation itself on large tensors
+- However, **no end-to-end improvement** observed because:
+  - GELU accounts for only **10.7%** of MLP compute time
+  - Linear layers (matmul) dominate at **84.4%** of MLP time
+  - cuBLAS is already highly optimized for matrix multiplications
+- **Conclusion**: Kernel fusion is effective for the target operation, but the operation is not the bottleneck
+
+### 5. Model Convergence
+
+All configurations converge to similar loss/accuracy, proving correctness:
+
+- Baseline DDP: Loss 6.97, Accuracy 12.5%
+- ZeRO-3: Loss 6.81, Accuracy 13.2%
+- ZeRO-3 + TP: Loss 7.17, Accuracy 10.6%
+
+(Lower accuracy at batch 32 is expected due to fewer gradient updates with same number of samples)
+
+## Conclusion
+
+1. **ZeRO-3 + Tensor Parallelism** is the recommended configuration for memory-constrained scenarios, achieving 70% memory reduction
+2. **Larger batch sizes** should be used to leverage memory savings - this transforms the memory-throughput trade-off into a net positive
+3. **Custom CUDA kernels** for elementwise operations provide limited benefit when compute is dominated by matrix multiplications
+4. **Future optimization** should target communication overhead (e.g., computation-communication overlap) rather than elementwise kernel fusion
 
 ## Project Structure
 
@@ -104,41 +167,35 @@ python3 benchmarks/microbenchmark.py --export-csv results/microbench.csv
 
 ## Training Commands
 
-### 1. Single GPU (Scaling Baseline)
-
-```bash
-python3 train.py --mode single --max-samples 5000
-```
-
-### 2. Baseline DDP (4 GPUs)
+### 1. Baseline DDP (4 GPUs)
 
 ```bash
 torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
 ```
 
-### 3. Hybrid ZeRO-3 (4 GPUs)
+### 2. ZeRO-3 (4 GPUs)
 
 ```bash
 deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
 ```
 
-### 4. Hybrid DP×TP (DP=2, TP=2)
+### 3. ZeRO-3 + Tensor Parallelism (DP=2, TP=2)
 
 ```bash
-# Default batch size (memory efficient)
+# Default batch size 8 (memory efficient)
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
 
-# Larger batch size (higher MFU)
+# Larger batch size 32 (higher MFU)
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-samples 5000
 ```
 
-### 5. Hybrid DP×TP + Custom CUDA Fused Kernel
+### 4. ZeRO-3 + TP + Custom CUDA Fused Kernel
 
 ```bash
-# Default batch size
+# Default batch size 8
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
 
-# Larger batch size
+# Larger batch size 32
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --batch-size 32 --max-samples 5000
 ```
 
@@ -152,35 +209,6 @@ deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --b
 | `--max-samples` | Limit training samples for quick tests | None (full) |
 | `--use-fused-kernel` | Use custom CUDA fused bias+GELU kernel | False |
 | `--test` | Use small model/data for testing | False |
-
-## Full Comparison (For Report)
-
-Run all configurations sequentially:
-
-```bash
-# 1. Single GPU baseline
-python3 train.py --mode single --max-samples 5000
-
-# 2. Baseline DDP (4 GPUs)
-torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
-
-# 3. Hybrid ZeRO-3 (4 GPUs)
-deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
-
-# 4. Hybrid DP×TP (DP=2, TP=2)
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
-
-# 5. Hybrid DP×TP + CUDA fused kernel
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
-
-# 6. Hybrid DP×TP with larger batch (leverage memory savings)
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-samples 5000
-
-# 7. Hybrid DP×TP + CUDA fused with larger batch
-deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --batch-size 32 --max-samples 5000
-```
-
-Results are saved to `results/` as JSON files with metrics including loss, accuracy, throughput, and MFU.
 
 ## Architecture
 
@@ -209,12 +237,6 @@ The `fused_kernels/` directory contains custom CUDA kernels for fusing operation
 - Supports FP16 and FP32
 - Includes backward pass for autograd compatibility
 
-Performance results:
-
-- **GELU operation**: 1.12-1.18× faster than PyTorch baseline
-- **End-to-end MLP**: Minimal improvement because GELU is only ~2% of MLP compute time
-- Linear layers (matmul) dominate at ~94% of MLP time
-
 ### Memory Optimization Stack
 
 1. **FP16 Mixed Precision**: Reduces memory by 50%
@@ -232,17 +254,6 @@ The training script tracks:
 - **Throughput**: Tokens/second and samples/second
 - **MFU (Model FLOPs Utilization)**: Achieved FLOPs / Theoretical peak FLOPs
 - **Peak Memory**: GPU memory usage
-
-### Calculating Scaling Efficiency
-
-```
-Scaling Efficiency = T_N / (N × T_1) × 100%
-
-Where:
-- T_1 = Single GPU throughput
-- T_N = N-GPU throughput
-- N = Number of GPUs
-```
 
 ## Troubleshooting
 
@@ -277,21 +288,19 @@ If running out of memory:
 
 1. Reduce `--batch-size`
 2. Enable gradient checkpointing (already enabled by default)
-3. Use Hybrid DP×TP mode for lower memory usage
+3. Use ZeRO-3 + TP mode for lower memory usage
 
 ## References
 
-1. Z. Duan et al., "Research on Model Parallelism and Data Parallelism Optimization Methods in Large Language Model–Based Recommendation Systems," arXiv:2506.17551, 2025.
+1. S. Rajbhandari et al., "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models," SC20, 2020.
 
-2. Microsoft, "DeepSpeed: Accelerating Deep Learning Training," GitHub repository, 2024.
+2. M. Shoeybi et al., "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism," arXiv:1909.08053, 2019.
 
-3. S. Rajbhandari et al., "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models," SC20, 2020.
-
-4. M. Shoeybi et al., "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism," arXiv:1909.08053, 2019.
+3. Microsoft, "DeepSpeed: Accelerating Deep Learning Training," GitHub repository, 2024.
 
 ## Authors
 
-- M. Akram Bari (ma9091@nyu.edu)
-- Yashas Harisha (yh5569@nyu.edu)
+- M. Akram Bari (<ma9091@nyu.edu>)
+- Yashas Harisha (<yh5569@nyu.edu>)
 
 New York University - High Performance Machine Learning (HPML)
