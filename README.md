@@ -26,7 +26,7 @@ We train **GPT-2 Large (774M parameters)** on **WikiText-103** using 4 NVIDIA A1
 ## Project Structure
 
 ```
-hpml/
+hybrid-parallelism/
 ├── train.py                    # Main training script with all modes
 ├── ds_config_zero3.json        # DeepSpeed ZeRO-3 configuration
 ├── setup_and_run.sh            # Helper script for NYU HPC
@@ -71,7 +71,7 @@ pip install transformers datasets tqdm accelerate deepspeed
 /scratch/work/public/singularity/run-cuda-12.2.2.bash
 
 # 2. Navigate to project
-cd /path/to/hpml
+cd /path/to/hybrid-parallelism
 
 # 3. Source helper script (provides all commands as functions)
 source setup_and_run.sh
@@ -95,21 +95,25 @@ run_full_comparison
 If you prefer running commands directly instead of using the helper script:
 
 #### 1. Single GPU (Scaling Baseline)
+
 ```bash
 python train.py --mode single --max-samples 5000
 ```
 
 #### 2. Baseline DDP (4 GPUs)
+
 ```bash
 torchrun --nproc_per_node=4 train.py --mode baseline --max-samples 5000
 ```
 
 #### 3. Hybrid ZeRO-3 (4 GPUs)
+
 ```bash
 deepspeed --num_gpus=4 train.py --mode hybrid --max-samples 5000
 ```
 
 #### 4. Hybrid DP×TP (DP=2, TP=2)
+
 ```bash
 # Default batch size (memory efficient)
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --max-samples 5000
@@ -119,6 +123,7 @@ deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --batch-size 32 --max-
 ```
 
 #### 5. Hybrid DP×TP + Custom CUDA Fused Kernel
+
 ```bash
 deepspeed --num_gpus=4 train.py --mode hybrid --tp-size 2 --use-fused-kernel --max-samples 5000
 ```
@@ -194,6 +199,7 @@ For 4 GPUs with TP=2, DP=2:
 The `fused_kernels/` directory contains custom CUDA kernels for fusing operations:
 
 **Fused Bias + GELU Kernel** (`bias_gelu_cuda.cu`):
+
 - Computes `y = GELU(x + bias)` in a single kernel pass
 - Reduces memory traffic by avoiding intermediate tensor materialization
 - Uses tanh approximation: `GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))`
@@ -201,6 +207,7 @@ The `fused_kernels/` directory contains custom CUDA kernels for fusing operation
 - Includes backward pass for autograd compatibility
 
 Performance results:
+
 - **GELU operation**: 1.12-1.18× faster than PyTorch baseline
 - **End-to-end MLP**: Minimal improvement because GELU is only ~2% of MLP compute time
 - Linear layers (matmul) dominate at ~94% of MLP time
@@ -303,6 +310,7 @@ python -c "import torch.distributed as dist; print('OK')"
 ### Memory Issues
 
 If running out of memory:
+
 1. Reduce `--batch-size`
 2. Enable gradient checkpointing (already enabled by default)
 3. Use Hybrid DP×TP mode for lower memory usage
@@ -319,7 +327,7 @@ If running out of memory:
 
 ## Authors
 
-- M. Akram Bari (ma9091@nyu.edu)
-- Yashas Harisha (yh5569@nyu.edu)
+- M. Akram Bari (<ma9091@nyu.edu>)
+- Yashas Harisha (<yh5569@nyu.edu>)
 
 New York University - High Performance Machine Learning (HPML)
